@@ -96,7 +96,7 @@ with tab_pred:
         f"**Typical zone (no direction implied):** up to ≈ **{V['up_med']:,.0f}** (stretch {V['up_p75']:,.0f}) and "
         f"down to ≈ **{V['dn_med']:,.0f}** (stretch {V['dn_p25']:,.0f}). Based on the {V['n']} past days whose morning range was closest to today's.")
     st.caption("Backtest on 500 real days: afternoon move size was predictable (rank corr ≈ +0.48), direction was not (≈ coin flip). "
-               "It explains only ~17% of the variation, so a quiet morning can still end in a big day. Compare with option IV before trading.")
+               "Out-of-sample it explains only about 10–15% of the day-to-day variation, so a quiet morning can still end in a big day. Compare with option IV before trading.")
 
     # ---------------- chart ----------------
     lab = lambda ts: ts.strftime("%d %b %H:%M")
