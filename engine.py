@@ -160,3 +160,67 @@ def predict(df_hist, df_today, cutoff_min=620, top_k=20, same_weekday=False, **k
         t2, _ = find_matches(meta, feats, paths, tf, n, kk, same_weekday, today_date, **kw)
         s["by_k"].append((kk, int((t2.ret_close > 0).sum()), float(t2.ret_close.median())))
     return s
+
+
+# ======================= Walk-forward backtest =======================
+def backtest(df_hist, cutoff_min=620, top_k=20, same_weekday=False, min_lib=250, test_days=500,
+             w_path=1.0, w_extra=0.5, w_gap=0.4):
+    """For each past day D (last `test_days` days), predict cutoff->close using ONLY days before D,
+    exactly as the live tool would, then compare with what D really did. No lookahead:
+    features of D use only D's own morning; the library and its scaling use days < D."""
+    n = n_bars(cutoff_min)
+    days = split_days(df_hist)
+    meta, feats, _ = build_library(days, cutoff_min)
+    W = _weights(n, w_path, w_extra, w_gap)
+    dow = pd.to_datetime(meta.date).dt.dayofweek.to_numpy()
+    ret = meta.ret_close.to_numpy()
+    start = max(min_lib, len(meta) - test_days)
+    rows = []
+    for i in range(start, len(meta)):
+        lib = feats[:i]
+        sd = lib.std(axis=0)
+        sd[sd == 0] = 1.0
+        dist = np.sqrt((((lib - feats[i]) / sd * W) ** 2).sum(axis=1))
+        idx = np.arange(i)
+        if same_weekday:
+            idx = idx[dow[:i] == dow[i]]
+        if len(idx) < top_k:
+            continue
+        sel = idx[np.argsort(dist[idx])][:top_k]
+        r = ret[sel]
+        rows.append({"date": meta.date.iloc[i], "up_frac": float((r > 0).mean()),
+                     "pred_median": float(np.median(r)), "pred_mean": float(r.mean()),
+                     "actual": float(ret[i])})
+    return pd.DataFrame(rows)
+
+
+def backtest_summary(bt, thr=0.65):
+    """Turn per-day backtest rows into headline numbers. Signal: long if up_frac >= thr, short if <= 1-thr."""
+    if bt.empty:
+        return {}
+    a = bt.actual.to_numpy()
+    pos = np.where(bt.up_frac >= thr, 1, np.where(bt.up_frac <= 1 - thr, -1, 0))
+    pnl = pos * a
+    tr = pos != 0
+    s = {
+        "days": len(bt), "thr": thr,
+        "base_up_rate": float((a > 0).mean() * 100),
+        "dir_acc": float((np.sign(bt.pred_median) == np.sign(a)).mean() * 100),
+        "corr": float(np.corrcoef(bt.pred_median, a)[0, 1]) if len(bt) > 2 else float("nan"),
+        "trades": int(tr.sum()), "longs": int((pos == 1).sum()), "shorts": int((pos == -1).sum()),
+        "win_rate": float((pnl[tr] > 0).mean() * 100) if tr.any() else float("nan"),
+        "avg_trade": float(pnl[tr].mean()) if tr.any() else float("nan"),
+        "total": float(pnl.sum()), "buy_hold": float(a.sum()),
+        "worst_day": float(pnl.min()),
+    }
+    bands = [("Very bullish  (>=70% of matches up)", bt.up_frac >= 0.70),
+             ("Bullish       (60-70%)", (bt.up_frac >= 0.60) & (bt.up_frac < 0.70)),
+             ("Neutral       (40-60%)", (bt.up_frac > 0.40) & (bt.up_frac < 0.60)),
+             ("Bearish       (30-40%)", (bt.up_frac > 0.30) & (bt.up_frac <= 0.40)),
+             ("Very bearish  (<=30%)", bt.up_frac <= 0.30)]
+    s["bands"] = [(nm, int(m.sum()), float((bt.actual[m] > 0).mean() * 100) if m.any() else float("nan"),
+                   float(bt.actual[m].mean()) if m.any() else float("nan")) for nm, m in bands]
+    s["equity"] = np.cumsum(pnl)
+    s["equity_bh"] = np.cumsum(a)
+    s["pos"] = pos
+    return s

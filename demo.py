@@ -10,7 +10,7 @@ def make_demo(days=1250, seed=7, end="2026-11-20"):
     for d in dates:
         gap = rng.normal(0, 0.4) / 100
         px *= 1 + gap
-        drift = rng.normal(0, 0.02) / 100
+        drift = 0.0   # pure random walk: no real edge, so demo backtests should show none
         vol = rng.uniform(0.04, 0.10) / 100
         t0 = pd.Timestamp(d) + pd.Timedelta(hours=9, minutes=15)
         for i in range(75):

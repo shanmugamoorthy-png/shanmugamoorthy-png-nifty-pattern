@@ -15,6 +15,8 @@ expected high/low/close and time of high/low, and a median path with 25-75% band
    about 16 requests after each restart). A Render disk belongs to one service, so oi-dash's disk cannot be shared.
 5. Open the app after 10:20 and press "Refresh data + predict". Without the Dhan variables it runs in demo mode.
 
+Tabs: Prediction (previous-day candles + forecast; replays the last trading day when the market is closed) and Backtest (walk-forward, no lookahead).
+
 Command line: `python cli.py --demo` or `python cli.py --cutoff 10:20 --k 20 --weekday`
 
 ## Notes
