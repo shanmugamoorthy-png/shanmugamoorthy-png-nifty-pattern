@@ -15,7 +15,7 @@ expected high/low/close and time of high/low, and a median path with 25-75% band
    about 16 requests after each restart). A Render disk belongs to one service, so oi-dash's disk cannot be shared.
 5. Open the app after 10:20 and press "Refresh data + predict". Without the Dhan variables it runs in demo mode.
 
-Tabs: Prediction (previous-day candles + forecast; replays the last trading day when the market is closed) and Backtest (walk-forward, no lookahead).
+Tabs: **Today** (volatility readout first: expected afternoon range, typical/stretch high-low, previous-day candles; the 20-day similar-day table is kept as a reference; replays the last trading day when the market is closed) and **Backtest** (volatility test, does yesterday-range/gap add anything, direction reference).
 
 Command line: `python cli.py --demo` or `python cli.py --cutoff 10:20 --k 20 --weekday`
 

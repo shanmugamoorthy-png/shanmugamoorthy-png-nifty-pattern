@@ -64,7 +64,8 @@ def build_library(days, cutoff_min):
         if ok:
             f = morning_features(b, prev_close, n)
             oc, p = outcome(b, n)
-            rows.append({"date": d, **oc, "morning_ret": f[n - 1]})
+            rows.append({"date": d, **oc, "morning_ret": f[n - 1],
+                         "day_range": (b.h.max() / b.l.min() - 1) * 100})
             feats.append(f)
             full = np.full(FULL_DAY_BARS - n, np.nan)
             full[:len(p)] = p
@@ -135,6 +136,32 @@ def _hm(m):
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
+
+def vol_readout(meta, feats, tf, n, ref, k=150):
+    """Expected size of the move from the cutoff to the close, from the k past days whose MORNING RANGE
+    (09:15->cutoff high minus low, % of open) is closest to today's. Direction-neutral."""
+    mr = feats[:, n] - feats[:, n + 1]
+    t = float(tf[n] - tf[n + 1])
+    rng = (meta.mfe - meta.mae).to_numpy()
+    idx = np.argsort(np.abs(mr - t))[:min(k, len(mr))]
+    r = rng[idx]
+    q = np.percentile(mr, [25, 50, 75])
+    bucket = "Q1 quiet" if t <= q[0] else "Q2" if t <= q[1] else "Q3" if t <= q[2] else "Q4 wide"
+    mfe, mae = meta.mfe.to_numpy()[idx], meta.mae.to_numpy()[idx]
+    px = lambda pct: ref * (1 + pct / 100)
+    return {
+        "morning_range": t, "bucket": bucket, "pct_rank": float((mr < t).mean() * 100),
+        "n": len(idx), "lib_median_range": float(np.median(rng)),
+        "range_med": float(np.median(r)), "range_p25": float(np.percentile(r, 25)), "range_p75": float(np.percentile(r, 75)),
+        "range_pts": ref * float(np.median(r)) / 100,
+        "p_big": float((r > np.median(rng)).mean() * 100),     # above-median afternoon range
+        "p_gt1": float((r > 1.0).mean() * 100),                # afternoon range above 1%
+        "p_lt05": float((r < 0.5).mean() * 100),
+        "up_med": px(float(np.median(mfe))), "up_p75": px(float(np.percentile(mfe, 75))),
+        "dn_med": px(float(np.median(mae))), "dn_p25": px(float(np.percentile(mae, 25))),
+    }
+
+
 def predict(df_hist, df_today, cutoff_min=620, top_k=20, same_weekday=False, **kw):
     """Main entry. df_hist: 5y history (may include today's partial bars - they are excluded).
     df_today: today's bars so far. Returns dict with everything the UI needs."""
@@ -153,6 +180,8 @@ def predict(df_hist, df_today, cutoff_min=620, top_k=20, same_weekday=False, **k
     top, top_paths = find_matches(meta, feats, paths, tf, n, top_k, same_weekday, today_date, **kw)
     ref = float(today.c.iloc[n - 1])
     s = summarise(top, top_paths, ref, n)
+    s["vol"] = vol_readout(meta, feats, tf, n, ref)
+    s["_vol_args"] = (meta, feats, tf, n, ref)      # lets the UI re-run the readout with another neighbour count
     s.update(top=top, ref_price=ref, n_hist_days=len(meta), today=today, today_date=today_date, cutoff_min=cutoff_min)
     # stability: how does the answer change with 10 / 20 / 50 neighbours?
     s["by_k"] = []
@@ -175,6 +204,7 @@ def backtest(df_hist, cutoff_min=620, top_k=20, same_weekday=False, min_lib=250,
     dow = pd.to_datetime(meta.date).dt.dayofweek.to_numpy()
     ret = meta.ret_close.to_numpy()
     rng_ = (meta.mfe - meta.mae).to_numpy()            # cutoff->close high-low range, %
+    day_rng = meta.day_range.to_numpy()
     morning_rng = feats[:, n] - feats[:, n + 1]        # morning high - low, % of open
     start = max(min_lib, len(meta) - test_days)
     rows = []
@@ -197,6 +227,8 @@ def backtest(df_hist, cutoff_min=620, top_k=20, same_weekday=False, min_lib=250,
                      "pred_range": float(np.median(rng_[sel])),          # from the top-K matches
                      "base_morning_range": float(morning_rng[i]),         # baseline 1: today's morning high-low
                      "base_longrun_range": float(np.median(rng_[:i])),    # baseline 2: typical day, no pattern
+                     "base_prev_range": float(day_rng[i - 1]),           # yesterday's full high-low %
+                     "base_gap_abs": float(abs(feats[i, n + 2])),      # today's opening gap %
                      "actual_range": float(rng_[i]), "actual_abs": float(abs(ret[i]))})
     return pd.DataFrame(rows)
 
@@ -249,9 +281,36 @@ def range_summary(bt):
     big = bt.actual_range > np.median(y)
     out["quartiles"] = [(str(k), int(len(g)), float(g.pred_range.mean()), float(g.actual_range.mean()),
                          float(big[g.index].mean() * 100)) for k, g in bt.groupby(q, observed=True)]
+    qm = pd.qcut(bt.base_morning_range.rank(method="first"), 4, labels=["Q1 quiet", "Q2", "Q3", "Q4 wide"])
+    out["quartiles_morning"] = [(str(k), int(len(g)), float(g.base_morning_range.min()), float(g.base_morning_range.max()),
+                                 float(g.actual_range.mean()), float(g.actual_range.median()), float(big[g.index].mean() * 100))
+                                for k, g in bt.groupby(qm, observed=True)]
     # does the pattern add anything beyond the morning range? correlation of pattern with the part of actual range
     # that the morning range does not explain
     r_m = pd.Series(bt.actual_range.rank()).corr(pd.Series(bt.base_morning_range.rank()))
     resid = bt.actual_range.rank() - r_m * bt.base_morning_range.rank()
     out["spearman_pattern_extra"] = float(pd.Series(bt.pred_range.rank()).corr(resid))
     return out
+
+
+def range_extras(bt):
+    """Do yesterday's range / today's gap / the pattern add anything to the simple morning range?
+    Linear models fitted on the first half of the test days, scored on the second half (out-of-sample R2)."""
+    need = {"base_prev_range", "base_gap_abs"}
+    if bt.empty or not need.issubset(bt.columns):
+        return []
+    y = bt.actual_range.to_numpy()
+    h = len(bt) // 2
+    cols = {"morning": bt.base_morning_range.to_numpy(), "prev": bt.base_prev_range.to_numpy(),
+            "gap": bt.base_gap_abs.to_numpy(), "pattern": bt.pred_range.to_numpy()}
+
+    def fit(names):
+        X = np.column_stack([np.ones(len(y))] + [cols[k] for k in names])
+        b = np.linalg.lstsq(X[:h], y[:h], rcond=None)[0]
+        p = X @ b
+        r2 = lambda sl: 1 - ((y[sl] - p[sl]) ** 2).sum() / ((y[sl] - y[sl].mean()) ** 2).sum()
+        return float(r2(slice(0, h))), float(r2(slice(h, None)))
+    models = [("Morning range only (baseline)", ["morning"]), ("+ yesterday's full-day range", ["morning", "prev"]),
+              ("+ opening gap size", ["morning", "gap"]), ("+ yesterday's range + gap", ["morning", "prev", "gap"]),
+              ("+ 20-day pattern forecast", ["morning", "pattern"]), ("Everything", ["morning", "prev", "gap", "pattern"])]
+    return [(nm, *fit(k)) for nm, k in models]
