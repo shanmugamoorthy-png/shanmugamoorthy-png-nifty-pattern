@@ -174,6 +174,8 @@ def backtest(df_hist, cutoff_min=620, top_k=20, same_weekday=False, min_lib=250,
     W = _weights(n, w_path, w_extra, w_gap)
     dow = pd.to_datetime(meta.date).dt.dayofweek.to_numpy()
     ret = meta.ret_close.to_numpy()
+    rng_ = (meta.mfe - meta.mae).to_numpy()            # cutoff->close high-low range, %
+    morning_rng = feats[:, n] - feats[:, n + 1]        # morning high - low, % of open
     start = max(min_lib, len(meta) - test_days)
     rows = []
     for i in range(start, len(meta)):
@@ -190,7 +192,12 @@ def backtest(df_hist, cutoff_min=620, top_k=20, same_weekday=False, min_lib=250,
         r = ret[sel]
         rows.append({"date": meta.date.iloc[i], "up_frac": float((r > 0).mean()),
                      "pred_median": float(np.median(r)), "pred_mean": float(r.mean()),
-                     "actual": float(ret[i])})
+                     "actual": float(ret[i]),
+                     # --- range (volatility) prediction: size of the move from cutoff to close ---
+                     "pred_range": float(np.median(rng_[sel])),          # from the top-K matches
+                     "base_morning_range": float(morning_rng[i]),         # baseline 1: today's morning high-low
+                     "base_longrun_range": float(np.median(rng_[:i])),    # baseline 2: typical day, no pattern
+                     "actual_range": float(rng_[i]), "actual_abs": float(abs(ret[i]))})
     return pd.DataFrame(rows)
 
 
@@ -224,3 +231,27 @@ def backtest_summary(bt, thr=0.65):
     s["equity_bh"] = np.cumsum(a)
     s["pos"] = pos
     return s
+
+
+def range_summary(bt):
+    """Can the matches predict HOW MUCH the market moves after the cutoff (not which way)?
+    Compares the pattern-based prediction with two simple baselines using rank correlation."""
+    if bt.empty or "pred_range" not in bt:
+        return {}
+    sp = lambda x, y: float(pd.Series(x).rank().corr(pd.Series(y).rank()))
+    y = bt.actual_range.to_numpy()
+    out = {"days": len(bt),
+           "spearman_pattern": sp(bt.pred_range, y),
+           "spearman_morning": sp(bt.base_morning_range, y),
+           "spearman_abs_pattern": sp(bt.pred_range, bt.actual_abs),
+           "avg_actual_range": float(y.mean())}
+    q = pd.qcut(bt.pred_range.rank(method="first"), 4, labels=["Q1 quietest", "Q2", "Q3", "Q4 widest"])
+    big = bt.actual_range > np.median(y)
+    out["quartiles"] = [(str(k), int(len(g)), float(g.pred_range.mean()), float(g.actual_range.mean()),
+                         float(big[g.index].mean() * 100)) for k, g in bt.groupby(q, observed=True)]
+    # does the pattern add anything beyond the morning range? correlation of pattern with the part of actual range
+    # that the morning range does not explain
+    r_m = pd.Series(bt.actual_range.rank()).corr(pd.Series(bt.base_morning_range.rank()))
+    resid = bt.actual_range.rank() - r_m * bt.base_morning_range.rank()
+    out["spearman_pattern_extra"] = float(pd.Series(bt.pred_range.rank()).corr(resid))
+    return out

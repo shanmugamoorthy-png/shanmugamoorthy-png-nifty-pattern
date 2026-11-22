@@ -173,6 +173,23 @@ with tab_bt:
         bd = pd.DataFrame(B["bands"], columns=["Match agreement", "Days", "Actual up-rate %", "Avg actual move %"]).round(2)
         st.dataframe(bd, hide_index=True, use_container_width=True)
 
+        # ---------- range (how big a move) test ----------
+        R = E.range_summary(bt)
+        if R:
+            st.subheader("Range test — can the matches predict HOW MUCH it moves (not which way)?")
+            r1, r2, r3 = st.columns(3)
+            r1.metric("Pattern → actual range (rank corr)", f"{R['spearman_pattern']:+.2f}")
+            r2.metric("Simple baseline: morning high–low", f"{R['spearman_morning']:+.2f}")
+            r3.metric("Pattern's extra skill beyond baseline", f"{R['spearman_pattern_extra']:+.2f}")
+            rq = pd.DataFrame(R["quartiles"], columns=["Predicted range quartile", "Days", "Avg predicted range %",
+                                                       "Avg actual range %", "Days with above-median range %"]).round(2)
+            st.dataframe(rq, hide_index=True, use_container_width=True)
+            verdict = ("The pattern adds real information about move size beyond a simple morning-range rule."
+                       if R["spearman_pattern_extra"] > 0.15 else
+                       "The pattern does NOT add much beyond the simple morning-range baseline — use the baseline (or both) instead.")
+            st.caption(f"Range = cutoff→close high minus low, % of price. Ranks run -1…+1; ~0 means no skill. {verdict} "
+                       "A good range forecast helps pick option buying vs selling or position size, even when direction is a coin flip.")
+
         eq = go.Figure()
         d = pd.to_datetime(bt.date)
         eq.add_trace(go.Scatter(x=d, y=B["equity"], name="Follow signal (long/short/flat)", line=dict(width=3)))
